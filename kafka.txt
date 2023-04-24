@@ -1,0 +1,60 @@
+abstract class KafkaProducerService<K, V> {
+
+    protected abstract val producer: Producer<K, V>
+
+    protected fun produce(topic: String, key: K, value: V) {
+        producer.send(ProducerRecord(topic, key, value)) { meta, ex ->
+            ex?.let {
+                handleProducerException(it)
+            } ?: onProduce(meta)
+        }
+    }
+
+    protected abstract fun onProduce(metadata: RecordMetadata)
+    protected abstract fun handleProducerException(e: Exception)
+}
+
+abstract class KafkaConsumerService<K, V> {
+
+    companion object {
+        protected var job: Job = Job()
+    }
+
+    protected abstract val consumer: Consumer<K, V>
+    protected abstract val timeToPollMs: Long
+    protected abstract val topicsToConsume: List<String>
+
+    /**
+     * Initializing new consumer cancelling previous one to avoid
+     * multi-thread issues
+     */
+    suspend fun initConsumer() = coroutineScope {
+        job.cancelAndJoin()
+
+        if (topicsToConsume.isNotEmpty()) {
+            consumer.subscribe(topicsToConsume)
+
+            job = launch {
+                while (isActive) {
+                    try {
+                        val records = consumer.poll(Duration.ofMillis(timeToPollMs))
+                        onConsume(records)
+                        commitConsumed(records)
+                    } catch (e: Exception) {
+                        handleConsumerException(e)
+                        closeConsumer()
+                    }
+                }
+            }
+        }
+    }
+
+    protected abstract fun onConsume(records: ConsumerRecords<K, V>)
+    protected abstract fun handleConsumerException(e: Exception)
+
+    /**
+     * In case `auto.commit` is set to `false`
+     */
+    protected abstract fun commitConsumed(records: ConsumerRecords<K, V>)
+    abstract suspend fun closeConsumer()
+}
